@@ -193,6 +193,19 @@ def main(**kwargs):
         collate_fn=default_data_collator,
     )
 
+    def print_supervised_dataset_example(example):
+        print("input_ids:\n{}".format(example["input_ids"]))
+        # print(example["input_ids"].tolist())
+        print("inputs:\n{}".format(tokenizer.decode(example["input_ids"].tolist()[0], skip_special_tokens=False)))
+        print("label_ids:\n{}".format(example["labels"]))
+        print("labels:\n{}".format(
+            tokenizer.decode([d if d != -100 else tokenizer.pad_token_id for d in example["labels"].tolist()[0]],
+                             skip_special_tokens=False)
+        ))
+    for item in train_dataloader:
+        print_supervised_dataset_example(item)
+        break
+
     if train_config.run_validation:
         eval_dataloader = torch.utils.data.DataLoader(
             dataset_val,
