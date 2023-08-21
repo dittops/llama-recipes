@@ -6,7 +6,6 @@ import os
 import fire
 import torch
 import torch.distributed as dist
-import torch.distributed as dist
 import torch.optim as optim
 from peft import get_peft_model, prepare_model_for_int8_training
 from pkg_resources import packaging
@@ -71,10 +70,12 @@ def main(**kwargs):
 
     # Load the pre-trained model and setup its configuration
     if train_config.enable_fsdp and train_config.low_cpu_fsdp:
-        # for FSDP, we can save cpu memory by loading pretrained model on rank0 only.
-        # this avoids cpu oom when loading large models like llama 70B, in which case
-        # model alone would consume 2+TB cpu mem (70 * 4 * 8). This will add some comms
-        # overhead and currently requires latest nightly.
+        """
+        for FSDP, we can save cpu memory by loading pretrained model on rank0 only.
+        this avoids cpu oom when loading large models like llama 70B, in which case
+        model alone would consume 2+TB cpu mem (70 * 4 * 8). This will add some comms
+        overhead and currently requires latest nightly.
+        """
         v = packaging.version.parse(torch.__version__)
         verify_latest_nightly = v.is_devrelease and v.dev >= 20230701
         if not verify_latest_nightly:
@@ -97,7 +98,17 @@ def main(**kwargs):
             load_in_8bit=True if train_config.quantization else None,
             device_map="auto" if train_config.quantization else None,
         )
-
+    if train_config.enable_fsdp and train_config.use_fast_kernels:
+        """
+        For FSDP and FSDP+PEFT, setting 'use_fast_kernels' will enable
+        using of Flash Attention or Xformer memory-efficient kernels 
+        based on the hardware being used. This would speed up fine-tuning.
+        """
+        try:
+            from optimum.bettertransformer import BetterTransformer
+            model = BetterTransformer.transform(model) 
+        except ImportError:
+            print("Module 'optimum' not found. Please install 'optimum' it before proceeding.")
     print_model_size(model, train_config, rank if train_config.enable_fsdp else 0)
 
     # Prepare the model for int8 training if quantization is enabled
@@ -137,7 +148,7 @@ def main(**kwargs):
             sharding_strategy=fsdp_config.sharding_strategy,
             device_id=torch.cuda.current_device(),
             limit_all_gathers=True,
-            sync_module_states=True if train_config.low_cpu_fsdp else False,
+            sync_module_states=train_config.low_cpu_fsdp,
             param_init_fn=lambda module: module.to_empty(device=torch.device("cuda"), recurse=False)
             if train_config.low_cpu_fsdp and rank != 0 else None,
         )

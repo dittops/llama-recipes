@@ -31,7 +31,9 @@ def main(
     length_penalty: int=1, #[optional] Exponential penalty to the length that is used with beam-based generation. 
     enable_azure_content_safety: bool=False, # Enable safety check with Azure content safety api
     enable_sensitive_topics: bool=False, # Enable check for sensitive topics using AuditNLG APIs
-    enable_saleforce_content_safety: bool=True, # Enable safety check woth Saleforce safety flan t5
+    enable_salesforce_content_safety: bool=True, # Enable safety check with Salesforce safety flan t5
+    max_padding_length: int=None, # the max padding length to be used with tokenizer padding the prompts.
+    use_fast_kernels: bool = False, # Enable using SDPA from PyTroch Accelerated Transformers, make use Flash Attention and Xformer memory-efficient kernels
     **kwargs
 ):
     if prompt_file is not None:
@@ -51,6 +53,23 @@ def main(
     torch.manual_seed(seed)
     
     model = load_model(model_name, quantization)
+    if peft_model:
+        model = load_peft_model(model, peft_model)
+
+    model.eval()
+    
+    if use_fast_kernels:
+        """
+        Setting 'use_fast_kernels' will enable
+        using of Flash Attention or Xformer memory-efficient kernels 
+        based on the hardware being used. This would speed up inference when used for batched inputs.
+        """
+        try:
+            from optimum.bettertransformer import BetterTransformer
+            model = BetterTransformer.transform(model)    
+        except ImportError:
+            print("Module 'optimum' not found. Please install 'optimum' it before proceeding.")
+
     tokenizer = LlamaTokenizer.from_pretrained(model_name)
     tokenizer.add_special_tokens(
         {
@@ -58,10 +77,11 @@ def main(
             "pad_token": "<PAD>",
         }
     )
+    model.resize_token_embeddings(model.config.vocab_size + 1) 
     
     safety_checker = get_safety_checker(enable_azure_content_safety,
                                         enable_sensitive_topics,
-                                        enable_saleforce_content_safety,
+                                        enable_salesforce_content_safety,
                                         )
 
     # Safety check of the user prompt
@@ -76,15 +96,15 @@ def main(
             if not is_safe:
                 print(method)
                 print(report)
-        print("Skipping the inferece as the prompt is not safe.")
+        print("Skipping the inference as the prompt is not safe.")
         sys.exit(1)  # Exit the program with an error status
-
+        
     if peft_model:
         model = load_peft_model(model, peft_model)
 
     model.eval()
+    batch = tokenizer(user_prompt, padding='max_length', truncation=True,max_length=max_padding_length,return_tensors="pt")
 
-    batch = tokenizer(user_prompt, return_tensors="pt")
     batch = {k: v.to("cuda") for k, v in batch.items()}
     start = time.perf_counter()
     with torch.no_grad():
